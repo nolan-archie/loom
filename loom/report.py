@@ -7,6 +7,7 @@ from typing import Any
 from .cascade import CascadeReport
 from .detect import DetectResult
 from .strip import StripReport
+from .verify import VerifyReport
 
 STATUS_ICON = {
     "stripped": "✅",
@@ -21,6 +22,13 @@ HUNK_STATUS_ICON = {
     "conflict": "⚔️ ",
     "unresolved": "❔",
     "file-not-found": "❔",
+}
+
+VERIFY_STATUS_ICON = {
+    "ok": "✅",
+    "missing-macros": "❔",
+    "syntax-error": "❌",
+    "not-found": "❔",
 }
 
 
@@ -187,5 +195,66 @@ def cascade_to_text(report: CascadeReport, include_handoff: bool = False) -> str
     if report.resolved_file_text:
         lines.append("")
         lines.append(f"files fully resolved (safe to --apply): {', '.join(sorted(report.resolved_file_text))}")
+
+    return "\n".join(lines)
+
+
+def verify_to_json(report: VerifyReport) -> str:
+    d = {
+        "results": [
+            {
+                "path": r.path,
+                "status": r.status,
+                "expected_macros": r.expected_macros,
+                "missing_macros": r.missing_macros,
+                "syntax_ok": r.syntax_ok,
+                "syntax_detail": r.syntax_detail,
+                "syntax_method": r.syntax_method,
+                "compile_checked": r.compile_checked,
+                "compile_ok": r.compile_ok,
+                "compile_detail": r.compile_detail,
+            }
+            for r in report.results
+        ],
+        "ok_count": len(report.results) - len(report.failed),
+        "failed_count": len(report.failed),
+    }
+    return json.dumps(d, indent=2)
+
+
+def verify_to_text(report: VerifyReport) -> str:
+    lines = [
+        f"{'File':<35} {'Status':<16} {'Macros':<10} {'Syntax'}",
+        "-" * 90,
+    ]
+    for r in report.results:
+        icon = VERIFY_STATUS_ICON.get(r.status, "?")
+        macro_col = f"{len(r.expected_macros) - len(r.missing_macros)}/{len(r.expected_macros)}"
+        syntax_col = "n/a" if r.syntax_ok is None else ("ok" if r.syntax_ok else "FAIL")
+        lines.append(f"{r.path:<35} {icon} {r.status:<14} {macro_col:<10} {syntax_col}")
+
+    failed = report.failed
+    if failed:
+        lines.append("")
+        lines.append(f"❌ {len(failed)} file(s) failed verification:")
+        for r in failed:
+            if r.status == "not-found":
+                lines.append(f"  {r.path}: expected by the patch but missing from the tree")
+                continue
+            if r.missing_macros:
+                lines.append(f"  {r.path}: missing macro(s) {', '.join(r.missing_macros)}")
+            if r.syntax_ok is False:
+                lines.append(f"  {r.path}: {r.syntax_detail}")
+    else:
+        lines.append("")
+        lines.append(f"✅ all {len(report.results)} touched file(s) verified: macros present, syntax sane")
+
+    if any(r.compile_checked for r in report.results):
+        lines.append("")
+        lines.append("compile check (advisory only, never affects pass/fail):")
+        for r in report.results:
+            if r.compile_checked:
+                mark = "✅" if r.compile_ok else "⚠️ "
+                lines.append(f"  {mark} {r.path}: {r.compile_detail}")
 
     return "\n".join(lines)

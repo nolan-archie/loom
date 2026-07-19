@@ -13,8 +13,11 @@ from .report import (
     detect_to_text,
     strip_to_json,
     strip_to_text,
+    verify_to_json,
+    verify_to_text,
 )
 from .strip import apply_strip, strip_tree
+from .verify import verify_tree
 
 
 def cmd_detect(args: argparse.Namespace) -> int:
@@ -39,6 +42,26 @@ def cmd_strip(args: argparse.Namespace) -> int:
     return 1 if report.needs_review and not args.force else 0
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    report = verify_tree(args.kernel_tree, args.susfs_patch, compile_check=args.compile)
+    print(verify_to_json(report) if args.json else verify_to_text(report))
+    return 1 if report.failed else 0
+
+
+def _maybe_verify_after_apply(args: argparse.Namespace, patch_path: str) -> bool:
+    """runs stage 3 after a successful --apply, if --verify was passed.
+    returns True iff verify ran and found a failure - callers fold this
+    into their own exit code rather than overriding it, since a wire/
+    restage run that resolved every hunk but then fails verify is still
+    informative as a non-zero exit."""
+    if not (args.apply and args.verify):
+        return False
+    report = verify_tree(args.kernel_tree, patch_path, compile_check=args.compile)
+    print("\n--- stage 3: verify ---\n" if not args.json else "", end="")
+    print(verify_to_json(report) if args.json else verify_to_text(report))
+    return bool(report.failed)
+
+
 def cmd_wire(args: argparse.Namespace) -> int:
     # fresh wire = cascade engine directly against the target tree. tiers
     # 0-2 are built; anything they can't resolve is reported, not guessed.
@@ -57,7 +80,8 @@ def cmd_wire(args: argparse.Namespace) -> int:
             "hunks listed above as unresolved need tier 3/4, which aren't built yet.",
             file=sys.stderr,
         )
-    return 1 if report.unresolved else 0
+    verify_failed = _maybe_verify_after_apply(args, args.susfs_patch)
+    return 1 if (report.unresolved or verify_failed) else 0
 
 
 def cmd_restage(args: argparse.Namespace) -> int:
@@ -96,7 +120,8 @@ def cmd_restage(args: argparse.Namespace) -> int:
             "hunks listed above as unresolved need tier 3/4, which aren't built yet.",
             file=sys.stderr,
         )
-    return 1 if cascade_report.unresolved else 0
+    verify_failed = _maybe_verify_after_apply(args, args.new_susfs_patch)
+    return 1 if (cascade_report.unresolved or verify_failed) else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -125,6 +150,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_wire.add_argument("--apply", action="store_true", help="write to disk (default is dry run)")
     p_wire.add_argument("--json", action="store_true")
     p_wire.add_argument("--handoff", action="store_true", help="show Tier 4 review context for unresolved hunks")
+    p_wire.add_argument("--verify", action="store_true", help="run stage 3 verify after --apply")
+    p_wire.add_argument("--compile", action="store_true", help="with --verify, also try cc -fsyntax-only (advisory)")
     p_wire.set_defaults(func=cmd_wire)
 
     p_restage = sub.add_parser(
@@ -139,7 +166,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_restage.add_argument("--json", action="store_true")
     p_restage.add_argument("--handoff", action="store_true", help="show Tier 4 review context for unresolved hunks")
+    p_restage.add_argument("--verify", action="store_true", help="run stage 3 verify after --apply")
+    p_restage.add_argument("--compile", action="store_true", help="with --verify, also try cc -fsyntax-only (advisory)")
     p_restage.set_defaults(func=cmd_restage)
+
+    p_verify = sub.add_parser(
+        "verify", help="stage 3 - confirm expected macros + syntactic sanity post-apply"
+    )
+    p_verify.add_argument("kernel_tree")
+    p_verify.add_argument("susfs_patch", help="the patch that was applied - used to know what to expect")
+    p_verify.add_argument("--compile", action="store_true", help="also try cc -fsyntax-only per file (advisory)")
+    p_verify.add_argument("--json", action="store_true")
+    p_verify.set_defaults(func=cmd_verify)
 
     return p
 

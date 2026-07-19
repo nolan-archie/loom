@@ -1,7 +1,7 @@
 [project]
 name = "susfs-loom"
-version = "0.3.0"
-description = "Resilient patch-engine for susfs4ksu kernel integration (Detect + Strip + Cascade tiers 0-2)"
+version = "0.4.0"
+description = "Resilient patch-engine for susfs4ksu kernel integration (Detect + Strip + Cascade tiers 0-2 + Verify)"
 requires-python = ">=3.10"
 readme = "README.md"
 

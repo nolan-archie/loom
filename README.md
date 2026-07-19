@@ -1,11 +1,15 @@
-# susfs loom (v0.3)
+# susfs loom (v0.4)
 
 Patch-engine for keeping susfs4ksu hooks working across kernel/susfs
-version bumps. Detect + Strip + Cascade tiers 0-2 are built. `loom wire`
-and `loom restage` now handle exact matches, bounded 3-way drift, and C
-function-anchor relocation. Tiers 3-4 (semantic patch and human handoff)
-are still design-only, so anything they would be needed for gets reported
-as unresolved, never guessed at or silently dropped.
+version bumps. Detect + Strip + Cascade tiers 0-2 + Stage 3 Verify are
+built. `loom wire` and `loom restage` handle exact matches, bounded 3-way
+drift, and C function-anchor relocation, and can optionally confirm the
+result afterward with `loom verify` (macro presence + syntax sanity).
+Tier 3 (Coccinelle semantic patch) is still design-only on purpose — see
+"what's actually here vs not" below for why that one's deferred rather
+than half-built. Tier 4 (human handoff) ships as a `--handoff` text view.
+Anything no tier resolves is reported as unresolved/conflict and left
+untouched on disk, never guessed at or silently dropped.
 
 Strip is still useful standalone too: if you already have susfs hooked
 into a tree and want to bump to a newer susfs release, strip reconstructs
@@ -44,13 +48,24 @@ loom wire /path/to/kernel_tree /path/to/susfs_patch --apply  # write fully-resol
 loom restage /path/to/kernel_tree /path/to/new_susfs_patch
 loom restage /path/to/kernel_tree /path/to/new_susfs_patch --apply
 
+# stage 3 - verify: confirm expected macros + syntax sanity post-apply
+loom verify /path/to/kernel_tree /path/to/susfs_patch
+loom verify /path/to/kernel_tree /path/to/susfs_patch --compile  # advisory cc -fsyntax-only
+
+# or run it automatically right after wire/restage --apply:
+loom wire /path/to/kernel_tree /path/to/susfs_patch --apply --verify
+loom restage /path/to/kernel_tree /path/to/new_susfs_patch --apply --verify
+
 # --json on any command for scripting/CI
+# --handoff on wire/restage shows Tier 4's closest-target-region view for
+#   whatever's still unresolved after tiers 0-2
 ```
 
-`wire`/`restage` exit 1 if any hunk is left unresolved after tiers 0-2,
-so it's CI-safe to gate on the exit code - a clean exit 0 means every
-touched hunk actually resolved somewhere, not that some subset got
-silently skipped.
+`wire`/`restage` exit 1 if any hunk is left unresolved after tiers 0-2 (or,
+with `--verify`, if verify finds a problem in what got written), so it's
+CI-safe to gate on the exit code - a clean exit 0 means every touched hunk
+actually resolved somewhere and, if you asked for it, that the result still
+carries the macros it should and still parses as valid C.
 
 ## what's actually here vs not
 
@@ -67,11 +82,33 @@ silently skipped.
   3-way merge)
 - `loom wire` and `loom restage` run the above for real, per-hunk, and
   report which tier resolved each one - never a bare pass/fail
+- stage 3 verify (`verify.py`) - for every file the patch touches, checks
+  (a) every `CONFIG_KSU_SUSFS*` macro that patch's own hunks introduce in
+  that file is actually present afterward, and (b) the file still parses
+  as one well-formed C translation unit (`tree-sitter`'s own error
+  recovery when the tier-2 extra is installed, a comment/string-aware
+  brace-balance scan when it isn't - verify never hard-requires tier 2's
+  dependency). `--compile` adds an opt-in, advisory-only `cc -fsyntax-only`
+  pass; it never affects verify's pass/fail status, because a lone kernel
+  `.c` file essentially never compiles standalone outside kbuild (missing
+  generated headers, arch config, etc.) - useful as a second opinion when
+  it happens to work, uninformative when it doesn't
+- tier 4 human handoff (`--handoff` on `wire`/`restage`) - for every hunk
+  still unresolved after tiers 0-2, shows the patch's own old-image beside
+  either the real 3-way conflict output or the closest textual candidate
+  region loom could find in the tree, so there's something concrete to
+  start from instead of a bare `.rej`
 
-**doesn't exist yet:**
-- tier 3 (semantic patches via Coccinelle) and tier 4 (human handoff view)
-  - hunks that need either are reported as `unresolved`/`conflict` and left
-  untouched on disk
+**doesn't exist yet, on purpose:**
+- tier 3 (semantic patches via Coccinelle) - deliberately deferred, not
+  half-built: a `.cocci` semantic patch is a hand-authored artifact per
+  hook point, and the design's own roadmap (item 4) is to write those for
+  "whichever hook points empirically fail most often once tiers 0-2 are
+  collecting real failure data" - that data doesn't exist yet from a
+  single test fixture, so a "tier 3" built today would either be fake
+  (a weaker heuristic wearing tier 3's name) or premature (patches
+  authored against guessed-at hook points instead of measured ones).
+  Hunks that would need it are reported as `unresolved`, not guessed at.
 - structural fingerprinting / the community cache idea - there's a schema
   stub (`TreeFingerprint`) so it won't be a breaking change to add later,
   but nothing populates it yet
@@ -92,6 +129,12 @@ same insertion point" cleanly.
 pip install pytest
 pytest tests/ -v
 ```
+
+`test_verify.py` uses small synthetic patch/tree pairs rather than the real
+fixture, deliberately - verify reacts to whatever's left on disk afterward,
+so a constructed before/after pair exercises every status (ok /
+missing-macros / syntax-error / not-found) directly, including the
+brace-balance fallback path when `tree-sitter-c` isn't installed.
 
 ## where this'll probably break
 

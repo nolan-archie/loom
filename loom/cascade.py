@@ -1,5 +1,5 @@
-"""stage 2 - cascade apply, tiers 0-1 only. tiers 2-4 (anchor relocation,
-semantic patch, human handoff) are still design-only, see design doc §5.
+"""stage 2 - cascade apply, tiers 0-2. tiers 3-4 (semantic patch and
+human handoff) are still design-only, see design doc §5.
 
 works per-hunk, not per-file - each hunk in the patch is tried against the
 tree independently, escalating tolerance for drift, and tagged with
@@ -24,6 +24,14 @@ whichever tier actually resolved it:
       block and the patch's own edit genuinely collide - which is exactly
       the "minor context drift vs. real conflict" distinction tier 1 is
       supposed to draw (design doc §5, Stage 2).
+
+  tier 2 - AST anchor relocation
+      when tier 1's deliberately bounded local search cannot find the
+      context, use tree-sitter's C grammar to find the function named by
+      the hunk header.  The hunk is still matched and three-way merged
+      inside that one function; an AST anchor expands the search location,
+      it does not make a blind textual edit.  Ambiguous/missing anchors and
+      non-C files fall through safely.
 
 worth noting `git merge-file` doesn't need the tree to be a git repo or
 the original blob to exist in any object database - the base/theirs text
@@ -88,7 +96,7 @@ class HunkResult:
     file: str
     hunk_index: int  # 0-based, in patch order, for this file
     section: str
-    tier: int | None  # 0, 1, or None if unresolved
+    tier: int | None  # 0, 1, 2, or None if unresolved
     status: str  # applied / conflict / unresolved / file-not-found
     detail: str = ""
     conflict_text: str | None = None  # only set on tier-1 conflict, for tier-4 handoff later
@@ -108,9 +116,14 @@ class CascadeReport:
 
     @property
     def by_tier_count(self) -> dict[str, int]:
-        counts = {"tier-0": 0, "tier-1": 0, "unresolved": 0}
+        counts = {"tier-0": 0, "tier-1": 0, "tier-2": 0, "unresolved": 0}
         for r in self.results:
-            counts["tier-0" if r.tier == 0 else "tier-1" if r.tier == 1 else "unresolved"] += 1
+            counts[
+                "tier-0" if r.tier == 0 else
+                "tier-1" if r.tier == 1 else
+                "tier-2" if r.tier == 2 else
+                "unresolved"
+            ] += 1
         return counts
 
 
@@ -177,7 +190,10 @@ def _try_tier0(current_lines: list[str], hunk: Hunk, offset: int) -> list[str] |
     return current_lines[:start] + hunk.new_image + current_lines[end:]
 
 
-def _locate_best_window(current_lines: list[str], old_image: list[str], approx_start: int) -> tuple[int, float] | None:
+def _locate_best_window(
+    current_lines: list[str], old_image: list[str], approx_start: int,
+    search_window: int | None = SEARCH_WINDOW,
+) -> tuple[int, float] | None:
     """slides a window the length of old_image across a region of the
     current file around approx_start, scoring each position by similarity
     to old_image, returns (best_start, ratio) or None if nothing scored
@@ -189,8 +205,11 @@ def _locate_best_window(current_lines: list[str], old_image: list[str], approx_s
     if not old_image:
         return None
     n = len(old_image)
-    lo = max(0, approx_start - SEARCH_WINDOW)
-    hi = min(len(current_lines), approx_start + SEARCH_WINDOW + n)
+    if search_window is None:
+        lo, hi = 0, len(current_lines)
+    else:
+        lo = max(0, approx_start - search_window)
+        hi = min(len(current_lines), approx_start + search_window + n)
 
     best: tuple[int, float] | None = None
     sm = difflib.SequenceMatcher(autojunk=False)
@@ -263,6 +282,120 @@ def _try_tier1(current_lines: list[str], hunk: Hunk, offset: int) -> tuple[list[
         return current_lines[:start] + merged_lines + current_lines[start + n:], None
 
 
+def _function_name_from_section(section: str) -> str | None:
+    """Extract a function name from git's hunk-section text.
+
+    Hunk headers preserve the declaration text nearest to the edit, which
+    makes them a useful, patch-native anchor.  A section such as ``static
+    int foo(struct bar *x)`` yields ``foo``.  Sections for includes,
+    structs, and macro-heavy declarations deliberately return no anchor.
+    """
+    names = re.findall(r"\b([A-Za-z_]\w*)\s*\(", section)
+    return names[-1] if names else None
+
+
+def _function_anchors(current_lines: list[str], function_name: str) -> list[tuple[int, int]] | None:
+    """Return line spans of C functions named ``function_name``.
+
+    ``None`` means tree-sitter is unavailable, while an empty list means the
+    parser ran but found no unambiguous C function.  Keeping the dependency
+    optional preserves Loom's base install: Tier 0/1 continue to work and a
+    Tier-2 candidate is reported unresolved rather than guessed at.
+    """
+    try:
+        from tree_sitter import Language, Parser
+        import tree_sitter_c
+    except ImportError:
+        return None
+
+    source = "\n".join(current_lines).encode()
+    parser = Parser(Language(tree_sitter_c.language()))
+    tree = parser.parse(source)
+    anchors: list[tuple[int, int]] = []
+
+    def visit(node) -> None:
+        if node.type != "function_definition":
+            for child in node.children:
+                visit(child)
+            return
+        declarator = node.child_by_field_name("declarator")
+        if declarator is not None:
+            declarator_text = source[declarator.start_byte:declarator.end_byte].decode(errors="replace")
+            # The declarator can contain parameter names too; the first name
+            # immediately followed by an opening parenthesis is the function.
+            match = re.search(r"\b([A-Za-z_]\w*)\s*\(", declarator_text)
+            if match and match.group(1) == function_name:
+                # Byte offsets are stable across the supported tree-sitter
+                # bindings.  Deriving line spans from them also avoids
+                # depending on Point's binding-specific representation.
+                start_line = source.count(b"\n", 0, node.start_byte)
+                end_line = source.count(b"\n", 0, node.end_byte) + 1
+                anchors.append((start_line, end_line))
+
+    visit(tree.root_node)
+    return anchors
+
+
+def _try_tier2(current_lines: list[str], hunk: Hunk) -> tuple[list[str] | None, str | None, str]:
+    """Relocate a hunk into its uniquely named C function and merge it.
+
+    The final operation remains the same conservative three-way merge as
+    tier 1.  Tree-sitter only narrows the candidate region after the local
+    window was exhausted, so a function that moved hundreds or thousands of
+    lines can be handled without widening Tier 1 into a risky whole-file
+    search.
+    """
+    function_name = _function_name_from_section(hunk.section)
+    if not function_name:
+        return None, None, "hunk has no function signature usable as a C anchor"
+    anchors = _function_anchors(current_lines, function_name)
+    if anchors is None:
+        return None, None, "tree-sitter C parser is not installed (install susfs-loom[tier2])"
+    if len(anchors) != 1:
+        return None, None, (
+            f"C function anchor '{function_name}' was "
+            f"{'not found' if not anchors else 'ambiguous'}"
+        )
+
+    start, end = anchors[0]
+    old_image = hunk.old_image
+    if not old_image:
+        return None, None, "empty old-image cannot be safely anchored"
+    # The AST node is the safety boundary now, so searching all of this one
+    # function is safe even when it is longer than Tier 1's 400-line window.
+    located = _locate_best_window(
+        current_lines[start:end], old_image, approx_start=0, search_window=None,
+    )
+    if located is None or located[1] < MATCH_THRESHOLD:
+        return None, None, f"no plausible context match inside C function '{function_name}'"
+    relative_start, _ratio = located
+    absolute_start = start + relative_start
+    ours_block = current_lines[absolute_start:absolute_start + len(old_image)]
+
+    if not shutil.which("git"):
+        return None, None, "git is unavailable for the required 3-way merge"
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        ours_f, base_f, theirs_f = tdp / "ours", tdp / "base", tdp / "theirs"
+        ours_f.write_text("\n".join(ours_block) + "\n")
+        base_f.write_text("\n".join(old_image) + "\n")
+        theirs_f.write_text("\n".join(hunk.new_image) + "\n")
+        proc = subprocess.run(
+            ["git", "merge-file", "-p", str(ours_f), str(base_f), str(theirs_f)],
+            capture_output=True, text=True,
+        )
+        if proc.returncode < 0:
+            return None, None, "git merge-file failed"
+        merged_lines = proc.stdout.split("\n")
+        if merged_lines and merged_lines[-1] == "":
+            merged_lines = merged_lines[:-1]
+        if proc.returncode > 0:
+            return None, "\n".join(merged_lines), f"3-way merge conflicted inside C function '{function_name}'"
+    return current_lines[:absolute_start] + merged_lines + current_lines[absolute_start + len(old_image):], None, (
+        f"relocated via unique C function anchor '{function_name}'"
+    )
+
+
 def cascade_apply(tree_path: str | Path, patch_path: str | Path) -> CascadeReport:
     tree = Path(tree_path)
     patch_text = Path(patch_path).read_text(errors="replace")
@@ -299,7 +432,7 @@ def cascade_apply(tree_path: str | Path, patch_path: str | Path) -> CascadeRepor
                 ))
                 continue
 
-            spliced, conflict_text = _try_tier1(current_lines, hunk, offset)
+            spliced, tier1_conflict = _try_tier1(current_lines, hunk, offset)
             if spliced is not None:
                 offset += len(spliced) - len(current_lines)
                 current_lines = spliced
@@ -309,13 +442,23 @@ def cascade_apply(tree_path: str | Path, patch_path: str | Path) -> CascadeRepor
                 ))
                 continue
 
+            spliced, tier2_conflict, tier2_detail = _try_tier2(current_lines, hunk)
+            if spliced is not None:
+                offset += len(spliced) - len(current_lines)
+                current_lines = spliced
+                report.results.append(HunkResult(
+                    file=rel, hunk_index=i, section=hunk.section,
+                    tier=2, status="applied", detail=tier2_detail,
+                ))
+                continue
+
             file_had_unresolved = True
+            conflict_text = tier2_conflict or tier1_conflict
             status = "conflict" if conflict_text else "unresolved"
             detail = (
-                "3-way merge produced conflict markers - genuine overlap, needs tier 4 (human handoff, not built)"
+                f"{tier2_detail}; genuine overlap needs tier 4 (human handoff, not built)"
                 if conflict_text else
-                "no matching context found within search window - needs tier 2 (anchor relocation, not built) "
-                "or tier 3 (semantic patch, not built)"
+                f"{tier2_detail}; needs tier 3 (semantic patch, not built) or tier 4 (human handoff, not built)"
             )
             report.results.append(HunkResult(
                 file=rel, hunk_index=i, section=hunk.section,

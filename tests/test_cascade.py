@@ -154,3 +154,39 @@ def test_by_tier_count_breakdown(makefile_tree):
     counts = report.by_tier_count
     assert counts["tier-0"] >= 1
     assert counts["unresolved"] >= 1  # every other file in the real patch is missing from this tree
+
+
+def test_tier2_relocates_into_named_c_function_beyond_tier1_window(tmp_path):
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_c")
+
+    # The patch records target() near the start of the reference file, but
+    # this downstream tree has accumulated 450 lines above it. Tier 1's
+    # ±400-line textual search must refuse to reach that far; Tier 2 may use
+    # the hunk header's function signature and the C AST to search target()
+    # itself, then retains the same conservative 3-way merge operation.
+    patch = tmp_path / "target.patch"
+    patch.write_text(
+        "diff --git a/demo.c b/demo.c\n"
+        "--- a/demo.c\n"
+        "+++ b/demo.c\n"
+        "@@ -2,3 +2,4 @@ static int target(void)\n"
+        " static int target(void) {\n"
+        "     return 7;\n"
+        " }\n"
+        "+/* susfs hook */\n"
+    )
+    source = [f"/* downstream preamble {i} */" for i in range(450)] + [
+        "static int target(void) {",
+        "    return 7;",
+        "}",
+    ]
+    (tmp_path / "demo.c").write_text("\n".join(source) + "\n")
+
+    report = cascade_apply(tmp_path, patch)
+    result = report.results[0]
+    assert result.tier == 2
+    assert result.status == "applied"
+    assert "target" in result.detail
+    assert "/* susfs hook */" in report.resolved_file_text["demo.c"]
+    assert report.by_tier_count["tier-2"] == 1

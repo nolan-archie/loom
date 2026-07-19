@@ -149,6 +149,7 @@ def cascade_to_text(report: CascadeReport) -> str:
     lines.append(
         f"tier 0 (exact): {counts['tier-0']}   "
         f"tier 1 (3-way): {counts['tier-1']}   "
+        f"tier 2 (AST anchor): {counts['tier-2']}   "
         f"unresolved: {counts['unresolved']}"
     )
 
@@ -156,15 +157,14 @@ def cascade_to_text(report: CascadeReport) -> str:
     if unresolved:
         lines.append("")
         lines.append(
-            f"❔ {len(unresolved)} hunk(s) not resolved by tier 0/1 - need tier 2 "
-            "(anchor relocation), tier 3 (semantic patch), or tier 4 (human handoff), "
-            "none of which are built yet:"
+            f"❔ {len(unresolved)} hunk(s) not resolved by tiers 0-2 - need tier 3 "
+            "(semantic patch) or tier 4 (human handoff), neither of which is built yet:"
         )
         for r in unresolved:
             lines.append(f"  {r.file} [hunk {r.hunk_index}]: {r.detail}")
     else:
         lines.append("")
-        lines.append(f"✅ every touched hunk resolved by tier 0/1, {len(report.resolved_file_text)} file(s) ready to write")
+        lines.append(f"✅ every touched hunk resolved by tiers 0-2, {len(report.resolved_file_text)} file(s) ready to write")
 
     if report.resolved_file_text:
         lines.append("")

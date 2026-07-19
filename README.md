@@ -1,12 +1,11 @@
-# susfs loom (v0.2)
+# susfs loom (v0.3)
 
 Patch-engine for keeping susfs4ksu hooks working across kernel/susfs
-version bumps. Detect + Strip + Cascade tiers 0-1 are built (see design
-doc roadmap items 1-2). `loom wire` and `loom restage` do real work now,
-but only as far as tiers 0-1 (exact match + 3-way merge) can take them -
-tiers 2-4 (anchor relocation, semantic patch, human handoff) are still
-design-only, so anything those tiers would be needed for gets reported as
-unresolved, never guessed at or silently dropped.
+version bumps. Detect + Strip + Cascade tiers 0-2 are built. `loom wire`
+and `loom restage` now handle exact matches, bounded 3-way drift, and C
+function-anchor relocation. Tiers 3-4 (semantic patch and human handoff)
+are still design-only, so anything they would be needed for gets reported
+as unresolved, never guessed at or silently dropped.
 
 Strip is still useful standalone too: if you already have susfs hooked
 into a tree and want to bump to a newer susfs release, strip reconstructs
@@ -20,9 +19,11 @@ pip install -e .
 ```
 
 Needs `unifdef` and `git` on PATH (`apt install unifdef`; git's almost
-certainly already there). `git merge-file` - used for the tier 1 3-way
+certainly already there). `git merge-file` - used for the tier 1/2 3-way
 merge - ships with git itself, no separate install, and doesn't require
 the tree to actually be a git repo.
+
+Install Tier 2's optional C parser with `pip install -e '.[tier2]'`.
 
 ## usage
 
@@ -35,7 +36,7 @@ loom strip /path/to/kernel_tree /path/to/50_add_susfs_in_new.patch
 loom strip /path/to/kernel_tree /path/to/new.patch --apply   # write it back
                                                               # (coverage-flagged files skipped unless --force)
 
-# stage 2 - fresh wire: cascade tiers 0-1 against a clean-ish tree
+# stage 2 - fresh wire: cascade tiers 0-2 against a clean-ish tree
 loom wire /path/to/kernel_tree /path/to/susfs_patch
 loom wire /path/to/kernel_tree /path/to/susfs_patch --apply  # write fully-resolved files back
 
@@ -46,7 +47,7 @@ loom restage /path/to/kernel_tree /path/to/new_susfs_patch --apply
 # --json on any command for scripting/CI
 ```
 
-`wire`/`restage` exit 1 if any hunk is left unresolved after tiers 0-1,
+`wire`/`restage` exit 1 if any hunk is left unresolved after tiers 0-2,
 so it's CI-safe to gate on the exit code - a clean exit 0 means every
 touched hunk actually resolved somewhere, not that some subset got
 silently skipped.
@@ -61,16 +62,16 @@ silently skipped.
 - strip for both #ifdef blocks (unifdef) and Kbuild one-liners (regex)
 - coverage check that catches leftover susfs tokens instead of pretending
   everything's fine
-- cascade tier 0 (exact context match) and tier 1 (3-way merge via
-  `git merge-file`, using the patch's own recorded before/after image as
-  the merge base/theirs - no repo history or blob database required)
+- cascade tier 0 (exact context match), tier 1 (bounded 3-way merge), and
+  tier 2 (tree-sitter C-function anchor relocation followed by the same
+  3-way merge)
 - `loom wire` and `loom restage` run the above for real, per-hunk, and
   report which tier resolved each one - never a bare pass/fail
 
 **doesn't exist yet:**
-- tier 2 (anchor relocation via tree-sitter), tier 3 (semantic patches via
-  Coccinelle), tier 4 (human handoff view) - hunks that need any of these
-  are reported as `unresolved`/`conflict` and left untouched on disk
+- tier 3 (semantic patches via Coccinelle) and tier 4 (human handoff view)
+  - hunks that need either are reported as `unresolved`/`conflict` and left
+  untouched on disk
 - structural fingerprinting / the community cache idea - there's a schema
   stub (`TreeFingerprint`) so it won't be a breaking change to add later,
   but nothing populates it yet
@@ -107,5 +108,5 @@ pytest tests/ -v
   search bounded by `SEARCH_WINDOW` (400 lines) around the patch's
   recorded offset, not a whole-file search - if drift pushes a hook site
   further than that, it'll fall through to unresolved rather than risk
-  matching the wrong location. that's the deliberate tier 1/tier 2
-  boundary; tier 2 doesn't exist yet, so today that just means unresolved
+  matching the wrong location. Tier 2 can instead search the uniquely named
+  C function when the patch hunk contains a usable function signature

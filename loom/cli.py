@@ -41,8 +41,7 @@ def cmd_strip(args: argparse.Namespace) -> int:
 
 def cmd_wire(args: argparse.Namespace) -> int:
     # fresh wire = cascade engine directly against the target tree. tiers
-    # 0-1 are built; anything they can't resolve is reported, not guessed
-    # at - see cascade.py's module docstring for why tiers 2-4 matter here.
+    # 0-2 are built; anything they can't resolve is reported, not guessed.
     report = cascade_apply(args.kernel_tree, args.susfs_patch)
 
     if args.apply:
@@ -54,8 +53,8 @@ def cmd_wire(args: argparse.Namespace) -> int:
 
     if not args.json and report.unresolved:
         print(
-            "\nnote: loom wire currently only runs tiers 0-1 (exact + 3-way). "
-            "hunks listed above as unresolved need tier 2/3/4, which aren't built yet.",
+            "\nnote: loom wire currently runs tiers 0-2 (exact, 3-way, AST anchor). "
+            "hunks listed above as unresolved need tier 3/4, which aren't built yet.",
             file=sys.stderr,
         )
     return 1 if report.unresolved else 0
@@ -93,8 +92,8 @@ def cmd_restage(args: argparse.Namespace) -> int:
 
     if not args.json and cascade_report.unresolved:
         print(
-            "\nnote: loom restage currently only runs cascade tiers 0-1. "
-            "hunks listed above as unresolved need tier 2/3/4, which aren't built yet.",
+            "\nnote: loom restage currently runs cascade tiers 0-2. "
+            "hunks listed above as unresolved need tier 3/4, which aren't built yet.",
             file=sys.stderr,
         )
     return 1 if cascade_report.unresolved else 0
@@ -119,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_strip.set_defaults(func=cmd_strip)
 
     p_wire = sub.add_parser(
-        "wire", help="fresh wire mode - cascade tiers 0-1 only (2-4 not built)"
+        "wire", help="fresh wire mode - cascade tiers 0-2 (3-4 not built)"
     )
     p_wire.add_argument("kernel_tree")
     p_wire.add_argument("susfs_patch")
@@ -128,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_wire.set_defaults(func=cmd_wire)
 
     p_restage = sub.add_parser(
-        "restage", help="strip + fresh wire - cascade tiers 0-1 only (2-4 not built)"
+        "restage", help="strip + fresh wire - cascade tiers 0-2 (3-4 not built)"
     )
     p_restage.add_argument("kernel_tree")
     p_restage.add_argument("new_susfs_patch")

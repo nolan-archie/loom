@@ -122,6 +122,9 @@ def cascade_to_json(report: CascadeReport) -> str:
                 "status": r.status,
                 "detail": r.detail,
                 "conflict_text": r.conflict_text,
+                "handoff_text": r.handoff_text,
+                "handoff_start": r.handoff_start,
+                "patch_old_text": r.patch_old_text,
             }
             for r in report.results
         ],
@@ -131,7 +134,7 @@ def cascade_to_json(report: CascadeReport) -> str:
     return json.dumps(d, indent=2)
 
 
-def cascade_to_text(report: CascadeReport) -> str:
+def cascade_to_text(report: CascadeReport, include_handoff: bool = False) -> str:
     counts = report.by_tier_count
     lines = [
         f"{'File':<30} {'#':<4} {'Section':<28} {'Tier':<6} Status",
@@ -158,10 +161,25 @@ def cascade_to_text(report: CascadeReport) -> str:
         lines.append("")
         lines.append(
             f"❔ {len(unresolved)} hunk(s) not resolved by tiers 0-2 - need tier 3 "
-            "(semantic patch) or tier 4 (human handoff), neither of which is built yet:"
+            "(semantic patch) or a Tier 4 human decision:"
         )
         for r in unresolved:
             lines.append(f"  {r.file} [hunk {r.hunk_index}]: {r.detail}")
+        if include_handoff:
+            lines.append("")
+            lines.append("Tier 4 handoff — patch context and closest target region:")
+            for r in unresolved:
+                lines.extend([
+                    "",
+                    f"--- {r.file} hunk {r.hunk_index} ({r.section or 'no section'})",
+                    "patch old-image:",
+                ])
+                lines.append(r.patch_old_text or "<empty old-image>")
+                if r.conflict_text:
+                    lines.extend(["3-way conflict:", r.conflict_text or ""])
+                else:
+                    lines.append(f"target candidate (starting line {r.handoff_start}):")
+                    lines.append(r.handoff_text or "<no candidate text>")
     else:
         lines.append("")
         lines.append(f"✅ every touched hunk resolved by tiers 0-2, {len(report.resolved_file_text)} file(s) ready to write")

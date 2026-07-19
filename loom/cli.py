@@ -49,7 +49,7 @@ def cmd_wire(args: argparse.Namespace) -> int:
         if not args.json:
             print(f"wrote {len(written)} file(s) back to {args.kernel_tree}\n")
 
-    print(cascade_to_json(report) if args.json else cascade_to_text(report))
+    print(cascade_to_json(report) if args.json else cascade_to_text(report, args.handoff))
 
     if not args.json and report.unresolved:
         print(
@@ -88,7 +88,7 @@ def cmd_restage(args: argparse.Namespace) -> int:
         if not args.json:
             print(f"wrote {len(written)} file(s) back to {args.kernel_tree}\n")
 
-    print(cascade_to_json(cascade_report) if args.json else cascade_to_text(cascade_report))
+    print(cascade_to_json(cascade_report) if args.json else cascade_to_text(cascade_report, args.handoff))
 
     if not args.json and cascade_report.unresolved:
         print(
@@ -124,6 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_wire.add_argument("susfs_patch")
     p_wire.add_argument("--apply", action="store_true", help="write to disk (default is dry run)")
     p_wire.add_argument("--json", action="store_true")
+    p_wire.add_argument("--handoff", action="store_true", help="show Tier 4 review context for unresolved hunks")
     p_wire.set_defaults(func=cmd_wire)
 
     p_restage = sub.add_parser(
@@ -137,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="also strip coverage-flagged files and cascade anyway (not recommended)",
     )
     p_restage.add_argument("--json", action="store_true")
+    p_restage.add_argument("--handoff", action="store_true", help="show Tier 4 review context for unresolved hunks")
     p_restage.set_defaults(func=cmd_restage)
 
     return p

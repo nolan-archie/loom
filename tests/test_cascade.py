@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from loom.cascade import apply_cascade, cascade_apply, parse_hunks
+from loom.report import cascade_to_text
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REAL_PATCH = FIXTURES / "50_add_susfs_in_gki-android14-6.1.patch"
@@ -109,7 +110,24 @@ def test_genuine_conflict_is_not_silently_resolved(tmp_path):
     assert result.tier is None
     assert result.status == "conflict"
     assert "<<<<<<<" in result.conflict_text
+    assert result.handoff_text == result.conflict_text
+    assert "obj-y +=\tbuffer.o" in result.patch_old_text
     assert "fs/Makefile" not in report.resolved_file_text
+
+
+def test_handoff_text_includes_patch_and_target_candidate_for_unresolved(tmp_path):
+    # no matching Makefile context anywhere: an unresolved hunk still gets
+    # a bounded candidate region, so a maintainer has somewhere concrete to
+    # start rather than a bare reject file.
+    _write_makefile(tmp_path, [f"vendor_line_{i}" for i in range(40)])
+    report = cascade_apply(tmp_path, REAL_PATCH)
+    result = next(r for r in report.results if r.file == "fs/Makefile")
+    assert result.status == "unresolved"
+    assert result.handoff_start is not None
+    assert "vendor_line" in result.handoff_text
+    text = cascade_to_text(report, include_handoff=True)
+    assert "Tier 4 handoff" in text
+    assert "patch old-image:" in text
 
 
 def test_file_not_found_reported_per_hunk_not_silently_skipped():

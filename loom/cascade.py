@@ -100,6 +100,9 @@ class HunkResult:
     status: str  # applied / conflict / unresolved / file-not-found
     detail: str = ""
     conflict_text: str | None = None  # only set on tier-1 conflict, for tier-4 handoff later
+    handoff_text: str | None = None  # closest target region for Tier 4 review
+    handoff_start: int | None = None  # 1-based line number in the target file
+    patch_old_text: str | None = None
 
 
 @dataclass
@@ -399,6 +402,22 @@ def _try_tier2(
     )
 
 
+def _handoff_candidate(current_lines: list[str], hunk: Hunk, offset: int) -> tuple[str, int]:
+    """Return a small, reviewable target region for an unresolved hunk.
+
+    This is deliberately diagnostic only: it never affects resolution or
+    writing.  Prefer Tier 1's locally best textual candidate; if there is no
+    credible candidate, show the recorded location with surrounding lines.
+    """
+    old_image = hunk.old_image
+    approx_start = max(0, hunk.old_start - 1 + offset)
+    located = _locate_best_window(current_lines, old_image, approx_start) if old_image else None
+    start = located[0] if located else min(approx_start, len(current_lines))
+    context_start = max(0, start - 3)
+    context_end = min(len(current_lines), start + max(len(old_image), 1) + 3)
+    return "\n".join(current_lines[context_start:context_end]), context_start + 1
+
+
 def cascade_apply(tree_path: str | Path, patch_path: str | Path) -> CascadeReport:
     tree = Path(tree_path)
     patch_text = Path(patch_path).read_text(errors="replace")
@@ -465,9 +484,14 @@ def cascade_apply(tree_path: str | Path, patch_path: str | Path) -> CascadeRepor
                 if conflict_text else
                 f"{tier2_detail}; needs tier 3 (semantic patch, not built) or tier 4 (human handoff, not built)"
             )
+            handoff_text, handoff_start = (
+                (conflict_text, None) if conflict_text else _handoff_candidate(current_lines, hunk, offset)
+            )
             report.results.append(HunkResult(
                 file=rel, hunk_index=i, section=hunk.section,
                 tier=None, status=status, detail=detail, conflict_text=conflict_text,
+                handoff_text=handoff_text, handoff_start=handoff_start,
+                patch_old_text="\n".join(hunk.old_image),
             ))
 
         if not file_had_unresolved:

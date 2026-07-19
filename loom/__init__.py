@@ -1,3 +1,4 @@
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-# just detect + strip for now, cascade engine is still on paper
+# detect + strip + cascade tiers 0-1 (exact + 3-way merge). tiers 2-4
+# (anchor relocation, semantic patch, human handoff) are still on paper.

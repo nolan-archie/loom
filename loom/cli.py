@@ -4,8 +4,16 @@ import argparse
 import sys
 
 from . import __version__
+from .cascade import apply_cascade, cascade_apply
 from .detect import detect
-from .report import detect_to_json, detect_to_text, strip_to_json, strip_to_text
+from .report import (
+    cascade_to_json,
+    cascade_to_text,
+    detect_to_json,
+    detect_to_text,
+    strip_to_json,
+    strip_to_text,
+)
 from .strip import apply_strip, strip_tree
 
 
@@ -32,22 +40,64 @@ def cmd_strip(args: argparse.Namespace) -> int:
 
 
 def cmd_wire(args: argparse.Namespace) -> int:
-    print(
-        "loom wire: not built yet. this needs the cascade engine (tiers 0-4), "
-        "which is still on paper. detect + strip work, that's it for now.",
-        file=sys.stderr,
-    )
-    return 2
+    # fresh wire = cascade engine directly against the target tree. tiers
+    # 0-1 are built; anything they can't resolve is reported, not guessed
+    # at - see cascade.py's module docstring for why tiers 2-4 matter here.
+    report = cascade_apply(args.kernel_tree, args.susfs_patch)
+
+    if args.apply:
+        written = apply_cascade(report, args.kernel_tree)
+        if not args.json:
+            print(f"wrote {len(written)} file(s) back to {args.kernel_tree}\n")
+
+    print(cascade_to_json(report) if args.json else cascade_to_text(report))
+
+    if not args.json and report.unresolved:
+        print(
+            "\nnote: loom wire currently only runs tiers 0-1 (exact + 3-way). "
+            "hunks listed above as unresolved need tier 2/3/4, which aren't built yet.",
+            file=sys.stderr,
+        )
+    return 1 if report.unresolved else 0
 
 
 def cmd_restage(args: argparse.Namespace) -> int:
-    print(
-        "loom restage: the strip half works fine (`loom strip`), but the "
-        "cascade engine it hands off to isn't built. run strip yourself, "
-        "then apply the new patch by hand against the stripped tree for now.",
-        file=sys.stderr,
-    )
-    return 2
+    # restage = strip, then hand the now-clean-ish tree to the same cascade
+    # engine fresh wire uses (design doc §4: "Strip, then Fresh Wire").
+    try:
+        strip_report = strip_tree(args.kernel_tree, args.new_susfs_patch)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if strip_report.needs_review and not args.force:
+        print(
+            "loom restage: strip stage flagged file(s) needing a human look "
+            "before cascade can safely run - see below. re-run with --force "
+            "on `loom strip` yourself first if you've resolved them by hand, "
+            "or pass --force here to strip+cascade anyway (not recommended).",
+            file=sys.stderr,
+        )
+        print(strip_to_text(strip_report), file=sys.stderr)
+        return 1
+
+    apply_strip(strip_report, args.kernel_tree, skip_flagged=not args.force)
+
+    cascade_report = cascade_apply(args.kernel_tree, args.new_susfs_patch)
+    if args.apply:
+        written = apply_cascade(cascade_report, args.kernel_tree)
+        if not args.json:
+            print(f"wrote {len(written)} file(s) back to {args.kernel_tree}\n")
+
+    print(cascade_to_json(cascade_report) if args.json else cascade_to_text(cascade_report))
+
+    if not args.json and cascade_report.unresolved:
+        print(
+            "\nnote: loom restage currently only runs cascade tiers 0-1. "
+            "hunks listed above as unresolved need tier 2/3/4, which aren't built yet.",
+            file=sys.stderr,
+        )
+    return 1 if cascade_report.unresolved else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,14 +118,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_strip.add_argument("--json", action="store_true")
     p_strip.set_defaults(func=cmd_strip)
 
-    p_wire = sub.add_parser("wire", help="fresh wire mode - not implemented yet")
+    p_wire = sub.add_parser(
+        "wire", help="fresh wire mode - cascade tiers 0-1 only (2-4 not built)"
+    )
     p_wire.add_argument("kernel_tree")
     p_wire.add_argument("susfs_patch")
+    p_wire.add_argument("--apply", action="store_true", help="write to disk (default is dry run)")
+    p_wire.add_argument("--json", action="store_true")
     p_wire.set_defaults(func=cmd_wire)
 
-    p_restage = sub.add_parser("restage", help="strip + fresh wire - cascade engine not implemented yet")
+    p_restage = sub.add_parser(
+        "restage", help="strip + fresh wire - cascade tiers 0-1 only (2-4 not built)"
+    )
     p_restage.add_argument("kernel_tree")
     p_restage.add_argument("new_susfs_patch")
+    p_restage.add_argument("--apply", action="store_true", help="write to disk (default is dry run)")
+    p_restage.add_argument(
+        "--force", action="store_true",
+        help="also strip coverage-flagged files and cascade anyway (not recommended)",
+    )
+    p_restage.add_argument("--json", action="store_true")
     p_restage.set_defaults(func=cmd_restage)
 
     return p

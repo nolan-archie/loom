@@ -4,6 +4,7 @@ import dataclasses
 import json
 from typing import Any
 
+from .cascade import CascadeReport
 from .detect import DetectResult
 from .strip import StripReport
 
@@ -13,6 +14,13 @@ STATUS_ICON = {
     "coverage-flag": "⚠️ ",
     "not-found": "❔",
     "error": "❌",
+}
+
+HUNK_STATUS_ICON = {
+    "applied": "✅",
+    "conflict": "⚔️ ",
+    "unresolved": "❔",
+    "file-not-found": "❔",
 }
 
 
@@ -100,4 +108,66 @@ def strip_to_text(report: StripReport) -> str:
     else:
         lines.append("")
         lines.append(f"✅ all {report.clean_count} touched files clean, good to hand off to fresh wire")
+    return "\n".join(lines)
+
+
+def cascade_to_json(report: CascadeReport) -> str:
+    d = {
+        "results": [
+            {
+                "file": r.file,
+                "hunk_index": r.hunk_index,
+                "section": r.section,
+                "tier": r.tier,
+                "status": r.status,
+                "detail": r.detail,
+                "conflict_text": r.conflict_text,
+            }
+            for r in report.results
+        ],
+        "by_tier_count": report.by_tier_count,
+        "resolved_files": sorted(report.resolved_file_text.keys()),
+    }
+    return json.dumps(d, indent=2)
+
+
+def cascade_to_text(report: CascadeReport) -> str:
+    counts = report.by_tier_count
+    lines = [
+        f"{'File':<30} {'#':<4} {'Section':<28} {'Tier':<6} Status",
+        "-" * 90,
+    ]
+    for r in report.results:
+        icon = HUNK_STATUS_ICON.get(r.status, "?")
+        tier = f"T{r.tier}" if r.tier is not None else "-"
+        section = (r.section[:26] + "…") if len(r.section) > 27 else r.section
+        lines.append(
+            f"{r.file:<30} {r.hunk_index:<4} {section:<28} {tier:<6} {icon} {r.status}"
+        )
+
+    lines.append("")
+    lines.append(
+        f"tier 0 (exact): {counts['tier-0']}   "
+        f"tier 1 (3-way): {counts['tier-1']}   "
+        f"unresolved: {counts['unresolved']}"
+    )
+
+    unresolved = report.unresolved
+    if unresolved:
+        lines.append("")
+        lines.append(
+            f"❔ {len(unresolved)} hunk(s) not resolved by tier 0/1 - need tier 2 "
+            "(anchor relocation), tier 3 (semantic patch), or tier 4 (human handoff), "
+            "none of which are built yet:"
+        )
+        for r in unresolved:
+            lines.append(f"  {r.file} [hunk {r.hunk_index}]: {r.detail}")
+    else:
+        lines.append("")
+        lines.append(f"✅ every touched hunk resolved by tier 0/1, {len(report.resolved_file_text)} file(s) ready to write")
+
+    if report.resolved_file_text:
+        lines.append("")
+        lines.append(f"files fully resolved (safe to --apply): {', '.join(sorted(report.resolved_file_text))}")
+
     return "\n".join(lines)

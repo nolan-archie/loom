@@ -77,7 +77,7 @@ silently skipped.
 
 ## tests
 
-Ran against a real susfs4ksu patch pulled from `ShirkNeko/susfs4ksu`'s
+Ran against a real susfs4ksu patch pulled from `Simonpunks/susfs4ksu`'s
 `gki-android14-6.1` branch, not something I made up - specifically the
 `mnt_alloc_group_id` case with a goto label defined inside the guarded
 branch, which is the gnarliest of the ifdef patterns susfs uses. The

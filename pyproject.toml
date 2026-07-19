@@ -1,0 +1,16 @@
+[project]
+name = "susfs-loom"
+version = "0.1.0"
+description = "Resilient patch-engine for susfs4ksu kernel integration (Stage 0 Detect + Stage 1 Strip)"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[project.scripts]
+loom = "loom.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["loom"]

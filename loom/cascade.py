@@ -39,9 +39,9 @@ comes straight out of the patch file itself, which already contains it.
 that matters here because vendor kernel trees dumped onto disk from a
 factory image often aren't git repos at all.
 
-anything neither tier resolves is left untouched on disk and reported as
-unresolved, needing tier 2 (anchor relocation) or tier 3 (semantic patch)
-or tier 4 (human handoff) - none of which exist yet. a hunk is never
+anything no tier resolves is left untouched on disk and reported as
+unresolved, needing tier 3 (semantic patch) or tier 4 (human handoff) -
+neither exists yet. a hunk is never
 marked applied without knowing which tier did it; that bookkeeping is the
 entire point of a cascade instead of one pass/fail patch call.
 """
@@ -233,9 +233,8 @@ def _locate_best_window(
 
 # below this similarity, we don't trust the located window enough to hand
 # it to a 3-way merge - too likely to be the wrong spot entirely rather
-# than the right spot with drift. this is a tier-1/tier-4 boundary call,
-# not a tier-1/tier-2 one: tier 2 doesn't exist yet, so today "below
-# threshold" just falls through to unresolved either way.
+# than the right spot with drift. Tier 2 may still retry inside a uniquely
+# identified AST function anchor; otherwise it falls through to unresolved.
 MATCH_THRESHOLD = 0.55
 
 
@@ -336,7 +335,9 @@ def _function_anchors(current_lines: list[str], function_name: str) -> list[tupl
     return anchors
 
 
-def _try_tier2(current_lines: list[str], hunk: Hunk) -> tuple[list[str] | None, str | None, str]:
+def _try_tier2(
+    current_lines: list[str], hunk: Hunk, is_c_source: bool,
+) -> tuple[list[str] | None, str | None, str]:
     """Relocate a hunk into its uniquely named C function and merge it.
 
     The final operation remains the same conservative three-way merge as
@@ -345,6 +346,8 @@ def _try_tier2(current_lines: list[str], hunk: Hunk) -> tuple[list[str] | None, 
     lines can be handled without widening Tier 1 into a risky whole-file
     search.
     """
+    if not is_c_source:
+        return None, None, "Tier 2 only anchors C source/header files"
     function_name = _function_name_from_section(hunk.section)
     if not function_name:
         return None, None, "hunk has no function signature usable as a C anchor"
@@ -442,7 +445,9 @@ def cascade_apply(tree_path: str | Path, patch_path: str | Path) -> CascadeRepor
                 ))
                 continue
 
-            spliced, tier2_conflict, tier2_detail = _try_tier2(current_lines, hunk)
+            spliced, tier2_conflict, tier2_detail = _try_tier2(
+                current_lines, hunk, Path(rel).suffix in {".c", ".h"},
+            )
             if spliced is not None:
                 offset += len(spliced) - len(current_lines)
                 current_lines = spliced

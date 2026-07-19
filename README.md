@@ -1,5 +1,7 @@
 # susfs loom (v0.4)
 
+STATUS : WORK IN PROGRESS 
+
 Patch-engine for keeping susfs4ksu hooks working across kernel/susfs
 version bumps. Detect + Strip + Cascade tiers 0-2 + Stage 3 Verify are
 built. `loom wire` and `loom restage` handle exact matches, bounded 3-way

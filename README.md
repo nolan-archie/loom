@@ -1,4 +1,4 @@
-# susfs loom (v0.4)
+# susfs loom (v0.5)
 
 STATUS : WORK IN PROGRESS 
 
@@ -12,6 +12,15 @@ Tier 3 (Coccinelle semantic patch) is still design-only on purpose — see
 than half-built. Tier 4 (human handoff) ships as a `--handoff` text view.
 Anything no tier resolves is reported as unresolved/conflict and left
 untouched on disk, never guessed at or silently dropped.
+
+**First real device-tree run (v0.5):** an already-hooked `android12-5.10`
+tree, 118 hunks across 23 files — 72 resolved automatically (34 exact, 38
+3-way), 3 files fully clean and safe to write. Spot-checking the
+unresolved hunks by hand found a real bug, not a fundamental gap: a
+cosmetic double-blank-line in the tree was making `git merge-file` report
+a spurious conflict on an otherwise-clean hunk. Fixed in this version —
+see §6/§7 of the design doc for the full writeup and the regression test
+that reproduces it.
 
 Strip is still useful standalone too: if you already have susfs hooked
 into a tree and want to bump to a newer susfs release, strip reconstructs

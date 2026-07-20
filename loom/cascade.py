@@ -241,6 +241,70 @@ def _locate_best_window(
 MATCH_THRESHOLD = 0.55
 
 
+def _collapse_blank_runs(lines: list[str]) -> list[str]:
+    """Collapse runs of 2+ consecutive blank lines down to a single blank
+    line.
+
+    Found via a real-tree test case: a vendor tree had reformatted
+    ``kernel/reboot.c`` to have two blank lines where the patch's own
+    recorded context has one. `_locate_best_window`'s similarity scoring
+    is lenient enough to still find the right spot despite that, but
+    `git merge-file`'s byte-exact base/ours comparison then treats the
+    extra blank line as a genuine "ours" edit competing with the patch's
+    own insertion at the same seam - producing a spurious conflict for a
+    hunk that has no real logical collision at all.
+
+    Blank-line *count* never carries semantic meaning in C, so
+    normalizing it before handing base/ours to `git merge-file` is safe:
+    every non-blank line stays byte-exact, only cosmetic run-length is
+    collapsed. Applied identically to the base (patch's old-image) and
+    ours (tree) sides so a whitespace-only difference between them
+    produces no diff at all, leaving only the patch's real content change
+    for merge-file to apply.
+    """
+    out: list[str] = []
+    prev_blank = False
+    for line in lines:
+        blank = line.strip() == ""
+        if blank and prev_blank:
+            continue
+        out.append(line)
+        prev_blank = blank
+    return out
+
+
+def _merge_file(ours: list[str], base: list[str], theirs: list[str]) -> tuple[list[str] | None, str | None]:
+    """runs `git merge-file -p` over three line-lists, normalizing blank-run
+    noise between base and ours first (see `_collapse_blank_runs`).
+    returns (merged_lines, None) on a clean merge, or (None, conflict_text)
+    on conflict; (None, None) on a hard tool error (missing git, negative
+    return code)."""
+    if not shutil.which("git"):
+        return None, None
+
+    base = _collapse_blank_runs(base)
+    ours = _collapse_blank_runs(ours)
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        ours_f, base_f, theirs_f = tdp / "ours", tdp / "base", tdp / "theirs"
+        ours_f.write_text("\n".join(ours) + ("\n" if ours else ""))
+        base_f.write_text("\n".join(base) + ("\n" if base else ""))
+        theirs_f.write_text("\n".join(theirs) + ("\n" if theirs else ""))
+        proc = subprocess.run(
+            ["git", "merge-file", "-p", str(ours_f), str(base_f), str(theirs_f)],
+            capture_output=True, text=True,
+        )
+        if proc.returncode < 0:
+            return None, None
+        merged_lines = proc.stdout.split("\n")
+        if merged_lines and merged_lines[-1] == "":
+            merged_lines = merged_lines[:-1]
+        if proc.returncode > 0:
+            return None, "\n".join(merged_lines)
+        return merged_lines, None
+
+
 def _try_tier1(current_lines: list[str], hunk: Hunk, offset: int) -> tuple[list[str] | None, str | None]:
     """returns (result, conflict_text). result is None if unresolved
     (either no plausible location found, or merge-file produced conflict
@@ -258,30 +322,10 @@ def _try_tier1(current_lines: list[str], hunk: Hunk, offset: int) -> tuple[list[
     if not shutil.which("git"):
         return None, None
 
-    with tempfile.TemporaryDirectory() as td:
-        tdp = Path(td)
-        ours_f = tdp / "ours"
-        base_f = tdp / "base"
-        theirs_f = tdp / "theirs"
-        ours_f.write_text("\n".join(ours_block) + ("\n" if ours_block else ""))
-        base_f.write_text("\n".join(old_image) + ("\n" if old_image else ""))
-        theirs_f.write_text("\n".join(hunk.new_image) + ("\n" if hunk.new_image else ""))
-
-        proc = subprocess.run(
-            ["git", "merge-file", "-p", str(ours_f), str(base_f), str(theirs_f)],
-            capture_output=True, text=True,
-        )
-        # exit codes: 0 clean, >0 = that many conflicts, <0 = real error
-        if proc.returncode < 0:
-            return None, None
-        merged_lines = proc.stdout.split("\n")
-        if merged_lines and merged_lines[-1] == "":
-            merged_lines = merged_lines[:-1]
-
-        if proc.returncode > 0:
-            return None, "\n".join(merged_lines)
-
-        return current_lines[:start] + merged_lines + current_lines[start + n:], None
+    merged_lines, conflict_text = _merge_file(ours_block, old_image, hunk.new_image)
+    if merged_lines is None:
+        return None, conflict_text
+    return current_lines[:start] + merged_lines + current_lines[start + n:], None
 
 
 def _function_name_from_section(section: str) -> str | None:
@@ -380,23 +424,11 @@ def _try_tier2(
 
     if not shutil.which("git"):
         return None, None, "git is unavailable for the required 3-way merge"
-    with tempfile.TemporaryDirectory() as td:
-        tdp = Path(td)
-        ours_f, base_f, theirs_f = tdp / "ours", tdp / "base", tdp / "theirs"
-        ours_f.write_text("\n".join(ours_block) + "\n")
-        base_f.write_text("\n".join(old_image) + "\n")
-        theirs_f.write_text("\n".join(hunk.new_image) + "\n")
-        proc = subprocess.run(
-            ["git", "merge-file", "-p", str(ours_f), str(base_f), str(theirs_f)],
-            capture_output=True, text=True,
-        )
-        if proc.returncode < 0:
+    merged_lines, conflict_text = _merge_file(ours_block, old_image, hunk.new_image)
+    if merged_lines is None:
+        if conflict_text is None:
             return None, None, "git merge-file failed"
-        merged_lines = proc.stdout.split("\n")
-        if merged_lines and merged_lines[-1] == "":
-            merged_lines = merged_lines[:-1]
-        if proc.returncode > 0:
-            return None, "\n".join(merged_lines), f"3-way merge conflicted inside C function '{function_name}'"
+        return None, conflict_text, f"3-way merge conflicted inside C function '{function_name}'"
     return current_lines[:absolute_start] + merged_lines + current_lines[absolute_start + len(old_image):], None, (
         f"relocated via unique C function anchor '{function_name}'"
     )

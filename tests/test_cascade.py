@@ -89,6 +89,75 @@ def test_tier1_resolves_unrelated_line_drift(tmp_path):
     assert "obj-$(CONFIG_KSU_SUSFS) += susfs.o" in report.resolved_file_text["fs/Makefile"]
 
 
+def test_tier1_ignores_cosmetic_extra_blank_line_at_merge_seam(tmp_path):
+    # found on a real device tree: a vendor tree had reformatted a function
+    # to have two blank lines where the patch's own recorded context has
+    # one. `_locate_best_window` was already lenient enough to find the
+    # right spot despite that, but `git merge-file`'s byte-exact base/ours
+    # comparison used to treat the extra blank line as a genuine "ours"
+    # edit competing with the patch's own insertion at the same seam,
+    # producing a spurious conflict for a hunk with no real logical
+    # collision at all. `_collapse_blank_runs` fixes this - confirmed
+    # below that the *same* ours/base/theirs content, unnormalized,
+    # genuinely does conflict via raw `git merge-file` (see the
+    # `_merge_file`/`_collapse_blank_runs` docstrings in cascade.py for
+    # the full real-tree writeup).
+    patch = tmp_path / "demo.patch"
+    patch.write_text(
+        "diff --git a/kernel/demo.c b/kernel/demo.c\n"
+        "--- a/kernel/demo.c\n"
+        "+++ b/kernel/demo.c\n"
+        "@@ -1,10 +1,14 @@ static long demo_reboot(void)\n"
+        " static long demo_reboot(void)\n"
+        " {\n"
+        " \tint ret = 0;\n"
+        " \n"
+        " \t/* only root allowed */\n"
+        " \tif (!capable(CAP_SYS_BOOT))\n"
+        " \t\treturn -EPERM;\n"
+        " \n"
+        "+#ifdef CONFIG_KSU_SUSFS\n"
+        "+\tret = ksu_handle_demo_reboot();\n"
+        "+#endif\n"
+        "+\n"
+        " \treturn ret;\n"
+        " }\n"
+    )
+    tree_lines = [
+        "static long demo_reboot(void)",
+        "{",
+        "\tint ret = 0;",
+        "",
+        "\t/* only root allowed */",
+        "\tif (!capable(CAP_SYS_BOOT))",
+        "\t\treturn -EPERM;",
+        "",
+        "",  # <- the only difference from the patch's recorded context:
+             #    a second blank line here, purely cosmetic
+        "\treturn ret;",
+        "}",
+    ]
+    (tmp_path / "kernel").mkdir()
+    (tmp_path / "kernel" / "demo.c").write_text("\n".join(tree_lines) + "\n")
+
+    report = cascade_apply(tmp_path, patch)
+    result = report.results[0]
+    assert result.tier == 1
+    assert result.status == "applied"
+    assert result.conflict_text is None
+    resolved = report.resolved_file_text["kernel/demo.c"]
+    assert "ksu_handle_demo_reboot" in resolved
+    assert "<<<<<<<" not in resolved
+
+
+def test_collapse_blank_runs_leaves_content_lines_untouched():
+    from loom.cascade import _collapse_blank_runs
+
+    assert _collapse_blank_runs(["a", "", "", "", "b", "c", "", "d"]) == ["a", "", "b", "c", "", "d"]
+    assert _collapse_blank_runs(["a", "b"]) == ["a", "b"]
+    assert _collapse_blank_runs([]) == []
+
+
 def test_genuine_conflict_is_not_silently_resolved(tmp_path):
     # vendor added its OWN kbuild line at the exact same insertion point
     # susfs wants - a real logical collision, not just drift. must NOT be
